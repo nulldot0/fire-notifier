@@ -16,7 +16,7 @@ stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
-
+USER_AGENT = "https://github.com/nulldot0/fire-notifier"
 SEARCH_TERM = os.environ.get("SEARCH_TERM", "")
 DELAY = int(os.environ.get("DELAY", 30))  # Delay in seconds
 JSON_DB_FILENAME = os.environ.get("JSON_DB_FILENAME", "fire_alerts.json")
@@ -110,7 +110,7 @@ def check_fire_alert_in_db(alert_data: dict) -> bool:
     return False
 
 
-def add_fire_alert_to_db(alert_data: dict):
+def add_fire_alert_to_db(alert_data: dict) -> None:
     if not os.path.exists(JSON_DB_PATH):
         with open(JSON_DB_PATH, "w") as f:
             json.dump([alert_data], f, indent=4)
@@ -134,7 +134,7 @@ def capitalize_per_word(text: str) -> str:
 
 
 def get_fire_alerts() -> dict:
-    response = requests.get(TARGET_URL)
+    response = requests.get(TARGET_URL, headers={"User-Agent": USER_AGENT})
     if not response.ok:
         logger.warning(f"Failed to get response from {TARGET_URL}!")
         return []
@@ -172,6 +172,22 @@ def get_fire_alerts() -> dict:
     return data
 
 
+def fire_alert_match(search_term: str, alert_info: str) -> bool:
+    search_term = search_term.strip().lower()
+    search_term = search_term.replace(", ", ",")
+    search_term = search_term.replace(" ,", ",")
+    search_terms = search_term.split(",")
+    search_terms = [term.strip() for term in search_terms]
+
+    alert_info = alert_info.strip().lower()
+
+    for term in search_terms:
+        if term in alert_info:
+            return True
+
+    return False
+
+
 def main():
     logger.info("Starting Fire Alert Service!")
     logger.debug("=" * 70)
@@ -196,7 +212,12 @@ def main():
         alert_type_clean = capitalize_per_word(alert_type)
         alert_info_clean = capitalize_per_word(alert_info)
 
-        if SEARCH_TERM and SEARCH_TERM.lower() not in alert_info.lower():
+        logger.info(
+            f"Recent Fire Alert: {alert_type_clean} "
+            f"from {alert_info_clean} on {alert_time}"
+        )
+
+        if not fire_alert_match(SEARCH_TERM, alert_info):
             logger.info(f"Search term '{SEARCH_TERM}' not found in {alert_info}!")
             continue
 
@@ -206,7 +227,8 @@ def main():
 
         if check_fire_alert_in_db(recent_fire_alert):
             logger.info(
-                f"Alert {alert_type_clean} from {alert_info_clean} on {alert_time} already sent!"
+                f"Alert {alert_type_clean} "
+                f"from {alert_info_clean} on {alert_time} already sent!"
             )
             continue
 
@@ -214,10 +236,13 @@ def main():
             f"{alert_type_clean}\n{alert_info_clean}\n{alert_time}"
         )
         if response.ok:
-            logger.info("Message sent successfully!")
+            logger.info(
+                f"Notified! {alert_type_clean} "
+                f"from {alert_info_clean} on {alert_time}"
+            )
             add_fire_alert_to_db(recent_fire_alert)
         else:
-            logger.warning(f"Failed to send message! {response.text}")
+            logger.warning(f"Failed to send notification! {response.text}")
 
 
 if __name__ == "__main__":
