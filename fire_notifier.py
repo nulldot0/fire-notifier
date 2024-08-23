@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import typing
 
 import requests
 from bs4 import BeautifulSoup
@@ -80,7 +81,7 @@ assert PUSHOVER_TOKEN, "Please set PUSHOVER_TOKEN in .env"
 assert PUSHOVER_USER, "Please set PUSHOVER_USER in .env"
 
 
-def send_pushover_message(message: str):
+def send_pushover_message(message: str) -> typing.Union[requests.Response, None]:
     url = PUSHOVER_ENDPOINT
     data = {
         "token": PUSHOVER_TOKEN,
@@ -92,8 +93,13 @@ def send_pushover_message(message: str):
         "expire": "3600",
         "ttl": "60",
     }
-    response = requests.post(url, data=data)
-    return response
+
+    try:
+        response = requests.post(url, data=data)
+        return response
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send pushover message! {e}")
+        return None
 
 
 def check_fire_alert_in_db(alert_data: dict) -> bool:
@@ -133,8 +139,13 @@ def capitalize_per_word(text: str) -> str:
     return " ".join([word.capitalize() for word in text.split()])
 
 
-def get_fire_alerts() -> dict:
-    response = requests.get(TARGET_URL, headers={"User-Agent": USER_AGENT})
+def get_fire_alerts() -> typing.List[dict]:
+    try:
+        response = requests.get(TARGET_URL, headers={"User-Agent": USER_AGENT})
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to get response from {TARGET_URL}! {e}")
+        return []
+
     if not response.ok:
         logger.warning(f"Failed to get response from {TARGET_URL}!")
         return []
@@ -172,38 +183,30 @@ def get_fire_alerts() -> dict:
     return data
 
 
-def fire_alert_match(search_term: str, alert_info: str) -> bool:
-    search_term = search_term.strip().lower()
-    search_term = search_term.replace(", ", ",")
-    search_term = search_term.replace(" ,", ",")
+def break_down_search_term(search_term: str) -> typing.List[str]:
     search_terms = search_term.split(",")
-    search_terms = [term.strip() for term in search_terms]
+    search_terms = [term.strip().capitalize() for term in search_terms]
+    return search_terms
 
-    alert_info = alert_info.strip().lower()
+
+def fire_alert_match(search_term: str, alert_info: str) -> bool:
+    search_terms = break_down_search_term(search_term)
 
     for term in search_terms:
-        if term in alert_info:
+        if term.lower() in alert_info.strip().lower():
             return True
 
     return False
 
 
-def main():
-    logger.info("Starting Fire Alert Service!")
-    logger.debug("=" * 70)
-    logger.debug("Configuration:")
-    logger.debug(f"Search Term: {SEARCH_TERM}")
-    logger.debug(f"Delay: {DELAY} seconds")
-    logger.debug(f"JSON DB Path: {JSON_DB_PATH}")
-    logger.debug(f"Target URL: {TARGET_URL}")
-    logger.debug(f"Pushover Token: {PUSHOVER_TOKEN[:6]}...")
-    logger.debug(f"Pushover User: {PUSHOVER_USER[:6]}...")
-    logger.debug(f"Pushover Endpoint: {PUSHOVER_ENDPOINT}")
-    logger.debug("=" * 70)
-
+def run_fire_alert():
     while True:
         time.sleep(DELAY)
         fire_alerts = get_fire_alerts()
+        if not fire_alerts:
+            logger.warning("No fire alerts found!")
+            continue
+
         recent_fire_alert = fire_alerts[0]
         alert_type = recent_fire_alert["alert_type"]
         alert_info = recent_fire_alert["alert_info"]
@@ -218,7 +221,16 @@ def main():
         )
 
         if not fire_alert_match(SEARCH_TERM, alert_info):
-            logger.info(f"Search term '{SEARCH_TERM}' not found in {alert_info}!")
+            search_terms = break_down_search_term(SEARCH_TERM)
+            search_terms_readable = ", ".join(search_terms)
+            if len(search_terms) > 1:
+                logger.info(
+                    f"Search terms `{search_terms_readable}` not found in {alert_info}!"
+                )
+                continue
+
+            search_term = search_terms[0].capitalize()
+            logger.info(f"Search term '{search_term}' not found in {alert_info}!")
             continue
 
         if alert_type not in WARN_ALARMS:
@@ -235,7 +247,7 @@ def main():
         response = send_pushover_message(
             f"{alert_type_clean}\n{alert_info_clean}\n{alert_time}"
         )
-        if response.ok:
+        if response and response.ok:
             logger.info(
                 f"Notified! {alert_type_clean} "
                 f"from {alert_info_clean} on {alert_time}"
@@ -243,6 +255,22 @@ def main():
             add_fire_alert_to_db(recent_fire_alert)
         else:
             logger.warning(f"Failed to send notification! {response.text}")
+
+
+def main():
+    logger.info("Starting Fire Alert Service!")
+    logger.debug("=" * 70)
+    logger.debug("Configurations")
+    logger.debug(f"Search Term: {SEARCH_TERM}")
+    logger.debug(f"Delay: {DELAY} seconds")
+    logger.debug(f"JSON DB Path: {JSON_DB_PATH}")
+    logger.debug(f"Target URL: {TARGET_URL}")
+    logger.debug(f"Pushover Token: {PUSHOVER_TOKEN[:6]}...")
+    logger.debug(f"Pushover User: {PUSHOVER_USER[:6]}...")
+    logger.debug(f"Pushover Endpoint: {PUSHOVER_ENDPOINT}")
+    logger.debug("=" * 70)
+
+    run_fire_alert()
 
 
 if __name__ == "__main__":
