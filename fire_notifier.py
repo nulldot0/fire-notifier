@@ -3,274 +3,351 @@ import logging
 import os
 import time
 import typing
+from abc import ABC, abstractmethod
 
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-load_dotenv()
+if os.path.exists(".env"):
+    load_dotenv()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
 
-USER_AGENT = "https://github.com/nulldot0/fire-notifier"
-SEARCH_TERM = os.environ.get("SEARCH_TERM", "")
-DELAY = int(os.environ.get("DELAY", 30))  # Delay in seconds
-JSON_DB_FILENAME = os.environ.get("JSON_DB_FILENAME", "fire_alerts.json")
-JSON_DB_PATH = os.path.join("db", JSON_DB_FILENAME)
-if not os.path.exists("db"):
-    os.makedirs("db")
-
-# Website: https://txtfire.net
-# Source Data URL
-TARGET_URL = "https://id.txtfire.net/qqq3"
-
-# Alert Types
-SECOND_ALARM = "2ND ALARM"
-POSSITIVE_ALARM = "POSSITIVE ALARM"
-GAS_STOVE_FIRE = "GAS STOVE FIRE"
-FOURTH_ALARM = "4TH ALARM"
-ELECTRICAL_FIRE = "ELECTRICAL FIRE"
-VEHICULAR_FIRE = "VEHICULAR FIRE"
-FIRE_UNDER_CONTROL = "FIRE UNDER CONTROL"
-RUBBISH_FIRE = "RUBBISH FIRE"
-CEILING_FIRE = "CEILING FIRE"
-THIRD_ALARM = "3RD ALARM"
-FOR_VERIFICATION = "FOR VERIFICATION"
-VISIBLE_SMOKE = "VISIBLE SMOKE"
-FALSE_ALARM = "FALSE ALARM"
-FIRE_OUT = "FIRE OUT"
-POSITIVE_ALARM = "POSITIVE ALARM"
-NEGATIVE_ALARM = "NEGATIVE ALARM"
-POST_FIRE = "POST FIRE"
-FIRST_ALARM = "1ST ALARM"
-KITCHEN_FIRE = "KITCHEN FIRE"
-
-# Alarm Types that are considered dangerous
-WARN_ALARMS = [
-    SECOND_ALARM,
-    POSSITIVE_ALARM,
-    GAS_STOVE_FIRE,
-    FOURTH_ALARM,
-    ELECTRICAL_FIRE,
-    VEHICULAR_FIRE,
-    RUBBISH_FIRE,
-    CEILING_FIRE,
-    THIRD_ALARM,
-    VISIBLE_SMOKE,
-    POSITIVE_ALARM,
-    POST_FIRE,
-    FIRST_ALARM,
-    KITCHEN_FIRE,
-    FOR_VERIFICATION,  # Consider as dangerous
-]
-
-# Pushover API
-# Handles sending push notifications to devices
-# Docs: https://pushover.net/api
-PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN")
-PUSHOVER_USER = os.environ.get("PUSHOVER_USER")
-PUSHOVER_ENDPOINT = os.environ.get(
-    "PUSHOVER_ENDPOINT", "https://api.pushover.net/1/messages.json"
-)
-assert PUSHOVER_TOKEN, "Please set PUSHOVER_TOKEN in .env"
-assert PUSHOVER_USER, "Please set PUSHOVER_USER in .env"
+if os.environ.get("ENABLE_LOGGING", True):
+    logger.addHandler(stream_handler)
 
 
-def send_pushover_message(message: str) -> typing.Union[requests.Response, None]:
-    url = PUSHOVER_ENDPOINT
-    data = {
-        "token": PUSHOVER_TOKEN,
-        "user": PUSHOVER_USER,
-        "message": message,
-        "sound": "alien",
-        "priority": "2",
-        "retry": "30",
-        "expire": "3600",
-        "ttl": "60",
-    }
-
-    try:
-        response = requests.post(url, data=data)
-        return response
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to send pushover message! {e}")
-        return None
+class Notifier(ABC):
+    @abstractmethod
+    def send_message(self, message: str):
+        raise NotImplementedError("Please Implement this method")
 
 
-def check_fire_alert_in_db(alert_data: dict) -> bool:
-    if not os.path.exists(JSON_DB_PATH):
-        return False
+class PushoverNotifier(Notifier):
+    # Docs: https://pushover.net/api
+    TOKEN = os.environ.get("PUSHOVER_TOKEN")
+    USER = os.environ.get("PUSHOVER_USER")
+    ENDPOINT = os.environ.get(
+        "PUSHOVER_ENDPOINT", "https://api.pushover.net/1/messages.json"
+    )
 
-    with open(JSON_DB_PATH, "r") as f:
-        data = json.load(f)
+    notifier_name = "Pushover"
 
-    for alert in data:
-        if alert["alert_time"] == alert_data["alert_time"]:
-            return True
+    def __init__(
+        self,
+        token: str = TOKEN,
+        user: str = USER,
+        endpoint: str = ENDPOINT,
+    ):
+        self.token = token
+        self.user = user
+        self.endpoint = endpoint
 
-    return False
-
-
-def add_fire_alert_to_db(alert_data: dict) -> None:
-    if not os.path.exists(JSON_DB_PATH):
-        with open(JSON_DB_PATH, "w") as f:
-            json.dump([alert_data], f, indent=4)
-        return
-
-    with open(JSON_DB_PATH, "r") as f:
-        data = json.load(f)
-
-    data.append(alert_data)
-
-    with open(JSON_DB_PATH, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-def clean_text(text: str) -> str:
-    return text.strip().replace("\n", "").replace("\t", "").replace("\r", "")
-
-
-def capitalize_per_word(text: str) -> str:
-    return " ".join([word.capitalize() for word in text.split()])
-
-
-def get_fire_alerts() -> typing.List[dict]:
-    try:
-        response = requests.get(TARGET_URL, headers={"User-Agent": USER_AGENT})
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Failed to get response from {TARGET_URL}! {e}")
-        return []
-
-    if not response.ok:
-        logger.warning(f"Failed to get response from {TARGET_URL}!")
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    fire_alerts = soup.find_all("div", class_="cardfire")
-
-    data = []
-    for fire_alert in fire_alerts:
-        fire_alert_info = clean_text(fire_alert.find_all("p")[0].text)
-        fire_alert_info = fire_alert_info.replace("->", "")
-        fire_alert_parts = fire_alert_info.split(":")
-        alert_info = fire_alert_parts[0].strip()
-
-        if len(fire_alert_parts) == 2:
-            alert_info = fire_alert_parts[0].split("!")[1]
-            alert_type = fire_alert_parts[1]
-
-        fire_alert_time = clean_text(fire_alert.find_all("p")[1].text)
-        fire_alert_time = fire_alert_time.split("As of ")[1]
-
-        alert_info = alert_info.strip()
-        alert_info = alert_info.replace("FIRE ALERT!", "")
-        alert_type = alert_type.strip()
-        alert_time = fire_alert_time.strip()
-
-        data.append(
-            {
-                "alert_info": alert_info.upper(),
-                "alert_type": alert_type.upper(),
-                "alert_time": alert_time.upper(),
-            }
+        assert self.token, (
+            "Please set Pushover Token! "
+            "(Hint: Set PUSHOVER_TOKEN environment variable)"
+        )
+        assert self.user, (
+            "Please set Pushover User! "
+            "(Hint: Set PUSHOVER_USER environment variable)"
         )
 
-    return data
+    def send_message(
+        self,
+        message: str,
+        sound: str = "alien",
+        priority: int = 2,
+        retry: int = 30,
+        expire: int = 3600,
+        ttl: int = 60,
+    ):
+        url = self.endpoint
+        data = {
+            "token": self.token,
+            "user": self.user,
+            "message": message,
+            "sound": sound,
+            "priority": priority,
+            "retry": retry,
+            "expire": expire,
+            "ttl": ttl,
+        }
+
+        try:
+            response = requests.post(url, data=data)
+            return response
+        except Exception as e:
+            logger.error(f"Failed to send pushover message! {e}")
+            return None
 
 
-def break_down_search_term(search_term: str) -> typing.List[str]:
-    search_terms = search_term.split(",")
-    search_terms = [term.strip().capitalize() for term in search_terms]
-    return search_terms
+class FireNotifierHelper:
+    @staticmethod
+    def split_and_capitalize_text(text: str) -> typing.List[str]:
+        text_split = text.split(",")
+        text = [term.strip().capitalize() for term in text_split]
+        return text
+
+    @staticmethod
+    def capitalize_per_word(text: str) -> str:
+        return " ".join([word.capitalize() for word in text.split()])
+
+    @staticmethod
+    def clean_text(text: str) -> str:
+        return text.strip().replace("\n", "").replace("\t", "").replace("\r", "")
 
 
-def fire_alert_match(search_term: str, alert_info: str) -> bool:
-    search_terms = break_down_search_term(search_term)
+class FireNotifier:
+    USER_AGENT = "https://github.com/nulldot0/fire-notifier"
 
-    for term in search_terms:
-        if term.lower() in alert_info.strip().lower():
-            return True
+    # Website: https://txtfire.net
+    # Source Data URL
+    TARGET_URL = "https://id.txtfire.net/qqq3"
 
-    return False
+    # Alert Types
+    SECOND_ALARM = "2ND ALARM"
+    POSSITIVE_ALARM = "POSSITIVE ALARM"
+    GAS_STOVE_FIRE = "GAS STOVE FIRE"
+    FOURTH_ALARM = "4TH ALARM"
+    ELECTRICAL_FIRE = "ELECTRICAL FIRE"
+    VEHICULAR_FIRE = "VEHICULAR FIRE"
+    FIRE_UNDER_CONTROL = "FIRE UNDER CONTROL"
+    RUBBISH_FIRE = "RUBBISH FIRE"
+    CEILING_FIRE = "CEILING FIRE"
+    THIRD_ALARM = "3RD ALARM"
+    FOR_VERIFICATION = "FOR VERIFICATION"
+    VISIBLE_SMOKE = "VISIBLE SMOKE"
+    FALSE_ALARM = "FALSE ALARM"
+    FIRE_OUT = "FIRE OUT"
+    POSITIVE_ALARM = "POSITIVE ALARM"
+    NEGATIVE_ALARM = "NEGATIVE ALARM"
+    POST_FIRE = "POST FIRE"
+    FIRST_ALARM = "1ST ALARM"
+    KITCHEN_FIRE = "KITCHEN FIRE"
 
+    # Alarm Types that are considered dangerous
+    WARN_ALARMS = [
+        SECOND_ALARM,
+        POSSITIVE_ALARM,
+        GAS_STOVE_FIRE,
+        FOURTH_ALARM,
+        ELECTRICAL_FIRE,
+        VEHICULAR_FIRE,
+        RUBBISH_FIRE,
+        CEILING_FIRE,
+        THIRD_ALARM,
+        VISIBLE_SMOKE,
+        POSITIVE_ALARM,
+        POST_FIRE,
+        FIRST_ALARM,
+        KITCHEN_FIRE,
+        FOR_VERIFICATION,  # Consider as dangerous
+    ]
 
-def run_fire_alert():
-    while True:
-        time.sleep(DELAY)
-        fire_alerts = get_fire_alerts()
-        if not fire_alerts:
-            logger.warning("No fire alerts found!")
-            continue
+    def __init__(
+        self,
+        search_term: str,
+        delay: int,
+        json_db_filename: str = "fire_alerts.json",
+        json_db_path: str = "db",
+        notifier_type: str = "pushover",
+        notifier: Notifier = None,
+    ):
+        self.search_term = search_term
+        self.delay = delay
+        self.json_db_filename = json_db_filename
+        self.json_db_path = os.path.join(json_db_path, json_db_filename)
 
-        recent_fire_alert = fire_alerts[0]
-        alert_type = recent_fire_alert["alert_type"]
-        alert_info = recent_fire_alert["alert_info"]
-        alert_time = recent_fire_alert["alert_time"]
+        if not os.path.exists(json_db_path):
+            os.makedirs(json_db_path)
 
-        alert_type_clean = capitalize_per_word(alert_type)
-        alert_info_clean = capitalize_per_word(alert_info)
+        if not os.path.exists(self.json_db_path):
+            with open(self.json_db_path, "w") as f:
+                json.dump([], f, indent=4)
 
-        logger.info(
-            f"Recent Fire Alert: {alert_type_clean} "
-            f"from {alert_info_clean} on {alert_time}"
-        )
+        if notifier and notifier_type:
+            logger.warning(
+                "Notifier and Notifier Type both provided! "
+                "Overriding to use Notifier!"
+            )
 
-        if not fire_alert_match(SEARCH_TERM, alert_info):
-            search_terms = break_down_search_term(SEARCH_TERM)
-            search_terms_readable = ", ".join(search_terms)
-            if len(search_terms) > 1:
+        if notifier:
+            self.notifier = notifier
+        else:
+            self.set_notifier(notifier_type)
+
+        logger.debug("=" * 70)
+        logger.debug("Configurations")
+        logger.debug(f"Search Term/s: {search_term}")
+        logger.debug(f"Delay: {delay} seconds")
+        logger.debug(f"JSON DB Filename: {json_db_filename}")
+        logger.debug(f"JSON DB Path: {self.json_db_path}")
+        logger.debug(f"Notifier Type: {self.notifier.notifier_name}")
+        logger.debug("=" * 70)
+
+    def set_notifier(self, notifier_type: str) -> None:
+        if notifier_type == "pushover":
+            self.notifier = PushoverNotifier()
+        else:
+            raise ValueError(f"Notifier type {notifier_type} not supported!")
+
+    def start(self):
+        while True:
+            time.sleep(self.delay)
+            fire_alerts = self.get_fire_alerts()
+            if not fire_alerts:
+                logger.warning("No fire alerts found!")
+                continue
+
+            recent_fire_alert = fire_alerts[0]
+            alert_type = recent_fire_alert["alert_type"]
+            alert_info = recent_fire_alert["alert_info"]
+            alert_time = recent_fire_alert["alert_time"]
+
+            alert_type_clean = FireNotifierHelper.capitalize_per_word(alert_type)
+            alert_info_clean = FireNotifierHelper.capitalize_per_word(alert_info)
+
+            logger.info(
+                f"Recent Fire Alert: {alert_type_clean} "
+                f"from {alert_info_clean} on {alert_time}"
+            )
+
+            if not self.is_match_found_in_alert_info(alert_info):
+                search_terms = FireNotifierHelper.split_and_capitalize_text(
+                    self.search_term
+                )
+                search_terms_readable = ", ".join(search_terms)
+                if len(search_terms) > 1:
+                    logger.info(
+                        f"Search terms `{search_terms_readable}` not found in {alert_info}!"
+                    )
+                    continue
+
+                search_term = search_terms[0].capitalize()
+                logger.info(f"Search term '{search_term}' not found in {alert_info}!")
+                continue
+
+            if alert_type not in self.WARN_ALARMS:
+                logger.info(f"Alert type {alert_type_clean} is not dangerous!")
+                continue
+
+            if self.check_fire_alert_in_db(recent_fire_alert):
                 logger.info(
-                    f"Search terms `{search_terms_readable}` not found in {alert_info}!"
+                    f"Alert {alert_type_clean} "
+                    f"from {alert_info_clean} on {alert_time} already sent!"
                 )
                 continue
 
-            search_term = search_terms[0].capitalize()
-            logger.info(f"Search term '{search_term}' not found in {alert_info}!")
-            continue
-
-        if alert_type not in WARN_ALARMS:
-            logger.info(f"Alert type {alert_type_clean} is not dangerous!")
-            continue
-
-        if check_fire_alert_in_db(recent_fire_alert):
-            logger.info(
-                f"Alert {alert_type_clean} "
-                f"from {alert_info_clean} on {alert_time} already sent!"
+            notification_message = (
+                f"{alert_type_clean}\n{alert_info_clean}\n{alert_time}"
             )
-            continue
+            response = self.notifier.send_message(notification_message)
 
-        response = send_pushover_message(
-            f"{alert_type_clean}\n{alert_info_clean}\n{alert_time}"
-        )
-        if response and response.ok:
-            logger.info(
-                f"Notified! {alert_type_clean} "
-                f"from {alert_info_clean} on {alert_time}"
+            if response and response.ok:
+                logger.info(
+                    f"Notified! {alert_type_clean} "
+                    f"from {alert_info_clean} on {alert_time}"
+                )
+                self.add_fire_alert_to_db(recent_fire_alert)
+            else:
+                logger.warning(f"Failed to send notification! {response.text}")
+
+    def get_fire_alerts(self) -> typing.List[dict]:
+        try:
+            response = requests.get(
+                self.TARGET_URL, headers={"User-Agent": self.USER_AGENT}
             )
-            add_fire_alert_to_db(recent_fire_alert)
-        else:
-            logger.warning(f"Failed to send notification! {response.text}")
+        except Exception as e:
+            logger.warning(f"Failed to get response from {self.TARGET_URL}! {e}")
+            return []
+
+        if not response.ok:
+            logger.warning(
+                f"Failed to get response from {self.TARGET_URL}! {response.text}"
+            )
+            return []
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        fire_alerts = soup.find_all("div", class_="cardfire")
+
+        data = []
+        for fire_alert in fire_alerts:
+            fire_alert_info = FireNotifierHelper.clean_text(
+                fire_alert.find_all("p")[0].text
+            )
+            fire_alert_info = fire_alert_info.replace("->", "")
+            fire_alert_parts = fire_alert_info.split(":")
+            alert_info = fire_alert_parts[0].strip()
+
+            alert_type = "UNKNOWN"
+            if len(fire_alert_parts) == 2:
+                alert_info = fire_alert_parts[0].split("!")[1]
+                alert_type = fire_alert_parts[1]
+
+            fire_alert_time = FireNotifierHelper.clean_text(
+                fire_alert.find_all("p")[1].text
+            )
+            fire_alert_time = fire_alert_time.split("As of ")[1]
+
+            alert_info = alert_info.strip()
+            alert_info = alert_info.replace("FIRE ALERT!", "")
+            alert_type = alert_type.strip()
+            alert_time = fire_alert_time.strip()
+
+            data.append(
+                {
+                    "alert_info": alert_info.upper(),
+                    "alert_type": alert_type.upper(),
+                    "alert_time": alert_time.upper(),
+                }
+            )
+
+        return data
+
+    def is_match_found_in_alert_info(self, alert_info: str) -> bool:
+        search_terms = FireNotifierHelper.split_and_capitalize_text(self.search_term)
+
+        for term in search_terms:
+            if term.lower() in alert_info.strip().lower():
+                return True
+
+        return False
+
+    def check_fire_alert_in_db(self, alert_data: dict) -> bool:
+        with open(self.json_db_path, "r") as f:
+            data = json.load(f)
+
+        for alert in data:
+            if alert["alert_time"] == alert_data["alert_time"]:
+                return True
+
+        return False
+
+    def add_fire_alert_to_db(self, alert_data: dict) -> None:
+        with open(self.json_db_path, "r") as f:
+            data = json.load(f)
+
+        data.append(alert_data)
+
+        with open(self.json_db_path, "w") as f:
+            json.dump(data, f, indent=4)
 
 
 def main():
-    logger.info("Starting Fire Alert Service!")
-    logger.debug("=" * 70)
-    logger.debug("Configurations")
-    logger.debug(f"Search Term: {SEARCH_TERM}")
-    logger.debug(f"Delay: {DELAY} seconds")
-    logger.debug(f"JSON DB Path: {JSON_DB_PATH}")
-    logger.debug(f"Target URL: {TARGET_URL}")
-    logger.debug(f"Pushover Token: {PUSHOVER_TOKEN[:6]}...")
-    logger.debug(f"Pushover User: {PUSHOVER_USER[:6]}...")
-    logger.debug(f"Pushover Endpoint: {PUSHOVER_ENDPOINT}")
-    logger.debug("=" * 70)
-
-    run_fire_alert()
+    SEARCH_TERM = os.environ.get("SEARCH_TERM", "")
+    DELAY = int(os.environ.get("DELAY", 30))
+    JSON_DB_FILENAME = os.environ.get("JSON_DB_FILENAME", "fire_alerts.json")
+    fire_notifier = FireNotifier(
+        search_term=SEARCH_TERM,
+        delay=DELAY,
+        json_db_filename=JSON_DB_FILENAME,
+    )
+    fire_notifier.start()
 
 
 if __name__ == "__main__":
