@@ -61,3 +61,4 @@ docker run -d --name fire-notifier --env-file .env --restart always -v fire_noti
 The default is empty string meaning it will send notification if it's a dangerous alert type regardless of the location. The value can also be a list of search terms separated by commas. Example: `Quezon City,Makati,Pasig`.
 - **`PUSHOVER_TOKEN`** - Your Pushover API token.
 - **`PUSHOVER_USER`** - Your Pushover user key.
+- **`PUSHOVER_DEVICE`** - The device name to send the notification to. Default is empty string which means it will send to all devices.

@@ -4,6 +4,7 @@ import os
 import time
 import typing
 from abc import ABC, abstractmethod
+from math import ceil
 
 import requests
 from bs4 import BeautifulSoup
@@ -32,6 +33,7 @@ class PushoverNotifier(Notifier):
     # Docs: https://pushover.net/api
     TOKEN = os.environ.get("PUSHOVER_TOKEN")
     USER = os.environ.get("PUSHOVER_USER")
+    DEVICE = os.environ.get("PUSHOVER_DEVICE", "")
     ENDPOINT = os.environ.get(
         "PUSHOVER_ENDPOINT", "https://api.pushover.net/1/messages.json"
     )
@@ -42,11 +44,13 @@ class PushoverNotifier(Notifier):
         self,
         token: str = TOKEN,
         user: str = USER,
+        device: str = DEVICE,
         endpoint: str = ENDPOINT,
     ):
         self.token = token
         self.user = user
         self.endpoint = endpoint
+        self.device = device
 
         assert self.token, (
             "Please set Pushover Token! "
@@ -56,6 +60,14 @@ class PushoverNotifier(Notifier):
             "Please set Pushover User! "
             "(Hint: Set PUSHOVER_USER environment variable)"
         )
+
+        logger.debug("=" * 70)
+        logger.debug("Pushover Configurations")
+        logger.debug(f"Token: {self.mask_secret(self.token)}")
+        logger.debug(f"User: {self.mask_secret(self.user)}")
+        logger.debug(f"Device: {self.mask_secret(self.device)}")
+        logger.debug(f"Endpoint: {self.endpoint}")
+        logger.debug("=" * 70)
 
     def send_message(
         self,
@@ -70,6 +82,7 @@ class PushoverNotifier(Notifier):
         data = {
             "token": self.token,
             "user": self.user,
+            "device": self.device,
             "message": message,
             "sound": sound,
             "priority": priority,
@@ -84,6 +97,18 @@ class PushoverNotifier(Notifier):
         except Exception as e:
             logger.error(f"Failed to send pushover message! {e}")
             return None
+
+    @staticmethod
+    def mask_secret(secret: str) -> str:
+        secret_len = len(secret)
+        mask_len = int(secret_len * 0.7)
+        start_mask_len = ceil(mask_len * 0.2)
+        end_mask_len = ceil(mask_len * 0.1)
+        first_part_secret = secret[:start_mask_len]
+        last_part_secret = secret[-end_mask_len:]
+        mask = "*" * mask_len
+
+        return f"{first_part_secret}{mask}{last_part_secret}"
 
 
 class FireNotifierHelper:
@@ -110,16 +135,18 @@ class FireNotifier:
     TARGET_URL = "https://id.txtfire.net/qqq3"
 
     # Alert Types
+    FIRST_ALARM = "1ST ALARM"
     SECOND_ALARM = "2ND ALARM"
+    THIRD_ALARM = "3RD ALARM"
+    FOURTH_ALARM = "4TH ALARM"
+    FIFTH_ALARM = "5TH ALARM"
     POSSITIVE_ALARM = "POSSITIVE ALARM"
     GAS_STOVE_FIRE = "GAS STOVE FIRE"
-    FOURTH_ALARM = "4TH ALARM"
     ELECTRICAL_FIRE = "ELECTRICAL FIRE"
     VEHICULAR_FIRE = "VEHICULAR FIRE"
     FIRE_UNDER_CONTROL = "FIRE UNDER CONTROL"
     RUBBISH_FIRE = "RUBBISH FIRE"
     CEILING_FIRE = "CEILING FIRE"
-    THIRD_ALARM = "3RD ALARM"
     FOR_VERIFICATION = "FOR VERIFICATION"
     VISIBLE_SMOKE = "VISIBLE SMOKE"
     FALSE_ALARM = "FALSE ALARM"
@@ -127,25 +154,27 @@ class FireNotifier:
     POSITIVE_ALARM = "POSITIVE ALARM"
     NEGATIVE_ALARM = "NEGATIVE ALARM"
     POST_FIRE = "POST FIRE"
-    FIRST_ALARM = "1ST ALARM"
     KITCHEN_FIRE = "KITCHEN FIRE"
+    MATRESS_FIRE = "MATRESS FIRE"
 
     # Alarm Types that are considered dangerous
     WARN_ALARMS = [
+        FIRST_ALARM,
         SECOND_ALARM,
+        THIRD_ALARM,
+        FOURTH_ALARM,
+        FIFTH_ALARM,
         POSSITIVE_ALARM,
         GAS_STOVE_FIRE,
-        FOURTH_ALARM,
         ELECTRICAL_FIRE,
         VEHICULAR_FIRE,
         RUBBISH_FIRE,
         CEILING_FIRE,
-        THIRD_ALARM,
         VISIBLE_SMOKE,
         POSITIVE_ALARM,
         POST_FIRE,
-        FIRST_ALARM,
         KITCHEN_FIRE,
+        MATRESS_FIRE,
         FOR_VERIFICATION,  # Consider as dangerous
     ]
 
@@ -179,7 +208,7 @@ class FireNotifier:
         if notifier:
             self.notifier = notifier
         else:
-            self.set_notifier(notifier_type)
+            self.set_default_notifier(notifier_type)
 
         logger.debug("=" * 70)
         logger.debug("Configurations")
@@ -190,7 +219,7 @@ class FireNotifier:
         logger.debug(f"Notifier Type: {self.notifier.notifier_name}")
         logger.debug("=" * 70)
 
-    def set_notifier(self, notifier_type: str) -> None:
+    def set_default_notifier(self, notifier_type: str):
         if notifier_type == "pushover":
             self.notifier = PushoverNotifier()
         else:
